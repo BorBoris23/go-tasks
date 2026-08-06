@@ -31,13 +31,18 @@ func SlowSearch(out io.Writer) {
 
 	lines := strings.Split(string(fileContents), "\n")
 
-	for i, line := range lines {
+	users := make([]map[string]interface{}, 0)
+	for _, line := range lines {
 		user := make(map[string]interface{})
-
+		// fmt.Printf("%v %v\n", err, line)
 		err := json.Unmarshal([]byte(line), &user)
 		if err != nil {
 			panic(err)
 		}
+		users = append(users, user)
+	}
+
+	for i, user := range users {
 
 		isAndroid := false
 		isMSIE := false

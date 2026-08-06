@@ -22,12 +22,9 @@ func FastSearch(out io.Writer) {
 	scanner := bufio.NewScanner(file)
 
 	for i := 0; scanner.Scan(); i++ {
-		line := scanner.Text()
 
 		u := user.User{}
-
-		err := u.UnmarshalJSON([]byte(line))
-		if err != nil {
+		if err := u.UnmarshalJSON(scanner.Bytes()); err != nil {
 			panic(err)
 		}
 
