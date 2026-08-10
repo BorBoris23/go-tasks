@@ -3,7 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"hw3/user"
+	"go-learning/task3/user"
 	"io"
 	"os"
 	"strings"
