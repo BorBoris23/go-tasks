@@ -28,6 +28,17 @@ type TablesResponse struct {
 	} `json:"response"`
 }
 
+type ExplorerRequest struct {
+	Writer    http.ResponseWriter
+	Request   *http.Request
+	DB        *sql.DB
+	Tables    []DbTable
+	Path      string
+	Parts     []string
+	TableName string
+	RecordID  string
+}
+
 func NewDbExplorer(db *sql.DB) (http.Handler, error) {
 	tables, err := getTables(db)
 	if err != nil {
@@ -35,63 +46,31 @@ func NewDbExplorer(db *sql.DB) (http.Handler, error) {
 	}
 
 	handler := func(writer http.ResponseWriter, request *http.Request) {
-		path := strings.Trim(request.URL.Path, "/")
-		parts := strings.Split(path, "/")
+
+		req := parseExplorerRequest(writer, request, db, tables)
 
 		switch request.Method {
 		case http.MethodGet:
 			switch {
-			case path == "":
+			case req.Path == "":
 				getTableNamesHandler(writer, tables)
-			case len(parts) == 1:
-				getRecordsByTableNameHandler(
-					writer,
-					tables,
-					parts[0],
-					db,
-					request,
-				)
-			case len(parts) == 2:
-				getRecordByIDHandler(
-					writer,
-					tables,
-					parts[0],
-					parts[1],
-					db,
-				)
-
+			case len(req.Parts) == 1:
+				getRecordsByTableNameHandler(req)
+			case len(req.Parts) == 2:
+				getRecordByIDHandler(req)
 			default:
 				http.Error(writer, "bad request", http.StatusBadRequest)
 				return
 			}
 
 		case http.MethodPut:
-			putRecordHandler(
-				writer,
-				tables,
-				parts[0],
-				request,
-				db,
-			)
+			putRecordHandler(req)
 
 		case http.MethodPost:
-			postRecordHandler(
-				writer,
-				tables,
-				parts[0],
-				parts[1],
-				request,
-				db,
-			)
+			postRecordHandler(req)
 
 		case http.MethodDelete:
-			deleteRecordHandler(
-				writer,
-				tables,
-				parts[0],
-				parts[1],
-				db,
-			)
+			deleteRecordHandler(req)
 
 		default:
 			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
@@ -101,13 +80,14 @@ func NewDbExplorer(db *sql.DB) (http.Handler, error) {
 	return http.HandlerFunc(handler), nil
 }
 
-func deleteRecordHandler(
-	writer http.ResponseWriter,
-	tables []DbTable,
-	tableName string,
-	recordID string,
-	db *sql.DB,
-) {
+func deleteRecordHandler(req ExplorerRequest) {
+
+	writer := req.Writer
+	tables := req.Tables
+	tableName := req.TableName
+	db := req.DB
+	recordID := req.RecordID
+
 	for _, table := range tables {
 		if table.Name != tableName {
 			continue
@@ -133,9 +113,7 @@ func deleteRecordHandler(
 			return
 		}
 
-		writer.Header().Set("Content-Type", "application/json")
-
-		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+		writeJSON(writer, http.StatusOK, map[string]interface{}{
 			"response": map[string]interface{}{
 				"deleted": deleted,
 			},
@@ -144,22 +122,18 @@ func deleteRecordHandler(
 		return
 	}
 
-	writer.Header().Set("Content-Type", "application/json")
-	writer.WriteHeader(http.StatusNotFound)
-
-	_ = json.NewEncoder(writer).Encode(map[string]string{
-		"error": "unknown table",
-	})
+	notFound(writer, "unknown table")
 }
 
-func postRecordHandler(
-	writer http.ResponseWriter,
-	tables []DbTable,
-	tableName string,
-	recordID string,
-	request *http.Request,
-	db *sql.DB,
-) {
+func postRecordHandler(req ExplorerRequest) {
+
+	writer := req.Writer
+	tables := req.Tables
+	tableName := req.TableName
+	db := req.DB
+	request := req.Request
+	recordID := req.RecordID
+
 	var data map[string]interface{}
 
 	if err := json.NewDecoder(request.Body).Decode(&data); err != nil {
@@ -188,21 +162,13 @@ func postRecordHandler(
 			}
 
 			if column.Name == primaryKey {
-				writer.Header().Set("Content-Type", "application/json")
-				writer.WriteHeader(http.StatusBadRequest)
-				_ = json.NewEncoder(writer).Encode(map[string]string{
-					"error": "field " + column.Name + " have invalid type",
-				})
+				badRequestField(writer, column.Name)
 				return
 			}
 
 			if value == nil {
 				if column.Null == "NO" {
-					writer.Header().Set("Content-Type", "application/json")
-					writer.WriteHeader(http.StatusBadRequest)
-					_ = json.NewEncoder(writer).Encode(map[string]string{
-						"error": "field " + column.Name + " have invalid type",
-					})
+					badRequestField(writer, column.Name)
 					return
 				}
 
@@ -214,22 +180,14 @@ func postRecordHandler(
 			switch {
 			case strings.HasPrefix(column.Type, "int"):
 				if _, ok := value.(float64); !ok {
-					writer.Header().Set("Content-Type", "application/json")
-					writer.WriteHeader(http.StatusBadRequest)
-					_ = json.NewEncoder(writer).Encode(map[string]string{
-						"error": "field " + column.Name + " have invalid type",
-					})
+					badRequestField(writer, column.Name)
 					return
 				}
 
 			case strings.HasPrefix(column.Type, "varchar"),
 				strings.HasPrefix(column.Type, "text"):
 				if _, ok := value.(string); !ok {
-					writer.Header().Set("Content-Type", "application/json")
-					writer.WriteHeader(http.StatusBadRequest)
-					_ = json.NewEncoder(writer).Encode(map[string]string{
-						"error": "field " + column.Name + " have invalid type",
-					})
+					badRequestField(writer, column.Name)
 					return
 				}
 			}
@@ -239,11 +197,7 @@ func postRecordHandler(
 		}
 
 		if len(setParts) == 0 {
-			writer.Header().Set("Content-Type", "application/json")
-			writer.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(writer).Encode(map[string]string{
-				"error": "no fields to update",
-			})
+			badRequest(writer, "no fields to update")
 			return
 		}
 
@@ -266,16 +220,11 @@ func postRecordHandler(
 		}
 
 		if updated == 0 {
-			writer.Header().Set("Content-Type", "application/json")
-			writer.WriteHeader(http.StatusNotFound)
-			_ = json.NewEncoder(writer).Encode(map[string]string{
-				"error": "record not found",
-			})
+			notFound(writer, "record not found")
 			return
 		}
 
-		writer.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+		writeJSON(writer, http.StatusOK, map[string]interface{}{
 			"response": map[string]interface{}{
 				"updated": updated,
 			},
@@ -283,20 +232,17 @@ func postRecordHandler(
 		return
 	}
 
-	writer.Header().Set("Content-Type", "application/json")
-	writer.WriteHeader(http.StatusNotFound)
-	_ = json.NewEncoder(writer).Encode(map[string]string{
-		"error": "unknown table",
-	})
+	notFound(writer, "unknown table")
 }
 
-func putRecordHandler(
-	writer http.ResponseWriter,
-	tables []DbTable,
-	tableName string,
-	request *http.Request,
-	db *sql.DB,
-) {
+func putRecordHandler(req ExplorerRequest) {
+
+	writer := req.Writer
+	tables := req.Tables
+	tableName := req.TableName
+	db := req.DB
+	request := req.Request
+
 	var data map[string]interface{}
 
 	if err := json.NewDecoder(request.Body).Decode(&data); err != nil {
@@ -333,26 +279,14 @@ func putRecordHandler(
 				switch {
 				case strings.HasPrefix(column.Type, "int"):
 					if _, ok := value.(float64); !ok {
-						writer.Header().Set("Content-Type", "application/json")
-						writer.WriteHeader(http.StatusBadRequest)
-
-						_ = json.NewEncoder(writer).Encode(map[string]string{
-							"error": "field " + column.Name + " have invalid type",
-						})
-
+						badRequestField(writer, column.Name)
 						return
 					}
 
 				case strings.HasPrefix(column.Type, "varchar"),
 					strings.HasPrefix(column.Type, "text"):
 					if _, ok := value.(string); !ok {
-						writer.Header().Set("Content-Type", "application/json")
-						writer.WriteHeader(http.StatusBadRequest)
-
-						_ = json.NewEncoder(writer).Encode(map[string]string{
-							"error": "field " + column.Name + " have invalid type",
-						})
-
+						badRequestField(writer, column.Name)
 						return
 					}
 				}
@@ -398,32 +332,25 @@ func putRecordHandler(
 			return
 		}
 
-		writer.Header().Set("Content-Type", "application/json")
-
-		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+		writeJSON(writer, http.StatusOK, map[string]interface{}{
 			"response": map[string]interface{}{
 				primaryKey: id,
 			},
 		})
-
 		return
 	}
 
-	writer.Header().Set("Content-Type", "application/json")
-	writer.WriteHeader(http.StatusNotFound)
-
-	_ = json.NewEncoder(writer).Encode(map[string]string{
-		"error": "unknown table",
-	})
+	notFound(writer, "unknown table")
 }
 
-func getRecordByIDHandler(
-	writer http.ResponseWriter,
-	tables []DbTable,
-	tableName string,
-	recordID string,
-	db *sql.DB,
-) {
+func getRecordByIDHandler(req ExplorerRequest) {
+
+	writer := req.Writer
+	tables := req.Tables
+	tableName := req.TableName
+	recordID := req.RecordID
+	db := req.DB
+
 	for _, table := range tables {
 		if table.Name == tableName {
 			columns, err := getTableColumns(db, tableName)
@@ -453,12 +380,7 @@ func getRecordByIDHandler(
 			}
 
 			if len(records) == 0 {
-				writer.Header().Set("Content-Type", "application/json")
-				writer.WriteHeader(http.StatusNotFound)
-
-				_ = json.NewEncoder(writer).Encode(map[string]string{
-					"error": "record not found",
-				})
+				notFound(writer, "record not found")
 				return
 			}
 
@@ -468,12 +390,7 @@ func getRecordByIDHandler(
 				},
 			}
 
-			writer.Header().Set("Content-Type", "application/json")
-
-			if err := json.NewEncoder(writer).Encode(response); err != nil {
-				http.Error(writer, "internal server error", http.StatusInternalServerError)
-				return
-			}
+			writeJSON(writer, http.StatusOK, response)
 
 			return
 		}
@@ -590,13 +507,13 @@ func getTableNames(db *sql.DB) ([]DbTable, error) {
 	return tables, nil
 }
 
-func getRecordsByTableNameHandler(
-	writer http.ResponseWriter,
-	tables []DbTable,
-	tableName string,
-	db *sql.DB,
-	request *http.Request,
-) {
+func getRecordsByTableNameHandler(req ExplorerRequest) {
+
+	writer := req.Writer
+	tables := req.Tables
+	tableName := req.TableName
+	db := req.DB
+	request := req.Request
 
 	limit, offset := getLimitAndOffset(request)
 
@@ -630,23 +547,13 @@ func getRecordsByTableNameHandler(
 				},
 			}
 
-			writer.Header().Set("Content-Type", "application/json")
-
-			if err := json.NewEncoder(writer).Encode(response); err != nil {
-				http.Error(writer, "internal server error", http.StatusInternalServerError)
-				return
-			}
+			writeJSON(writer, http.StatusOK, response)
 
 			return
 		}
 	}
 
-	writer.Header().Set("Content-Type", "application/json")
-	writer.WriteHeader(http.StatusNotFound)
-
-	_ = json.NewEncoder(writer).Encode(map[string]string{
-		"error": "unknown table",
-	})
+	notFound(writer, "unknown table")
 }
 
 func getLimitAndOffset(request *http.Request) (int, int) {
@@ -731,10 +638,8 @@ func getTableNamesHandler(writer http.ResponseWriter, tables []DbTable) {
 		tableNames = append(tableNames, table.Name)
 	}
 
-	writer.Header().Set("Content-Type", "application/json")
-
 	response := TablesResponse{}
 	response.Response.Tables = tableNames
 
-	_ = json.NewEncoder(writer).Encode(response)
+	writeJSON(writer, http.StatusOK, response)
 }
