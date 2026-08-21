@@ -8,7 +8,7 @@ import (
 type MyMicroservice struct {
 	ACL               map[string][]string
 	LogSubscribers    []Admin_LoggingServer
-	StatisticsClients []StatisticsClient
+	StatisticsClients map[int]StatisticsClient
 	ByMethod          map[string]uint64
 	ByConsumer        map[string]uint64
 	mu                sync.Mutex

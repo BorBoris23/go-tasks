@@ -16,8 +16,9 @@ import (
 func StartMyMicroservice(ctx context.Context, listenAddr, ACLData string) error {
 
 	aclService := &MyMicroservice{
-		ByMethod:   make(map[string]uint64),
-		ByConsumer: make(map[string]uint64),
+		ByMethod:          make(map[string]uint64),
+		ByConsumer:        make(map[string]uint64),
+		StatisticsClients: make(map[int]StatisticsClient),
 	}
 
 	err := parseACL(ACLData, aclService)

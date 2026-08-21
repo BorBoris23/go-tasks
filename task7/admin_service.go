@@ -20,33 +20,43 @@ func (m *AdminService) Logging(n *Nothing, logger Admin_LoggingServer) error {
 func (m *AdminService) Statistics(start *StatInterval, statistics Admin_StatisticsServer) error {
 
 	m.microservice.mu.Lock()
-	statisticsClients := StatisticsClient{
+
+	statisticsClient := StatisticsClient{
 		StatSubscribers: statistics,
 		IntervalSeconds: start.IntervalSeconds,
 		ByMethod:        make(map[string]uint64),
 		ByConsumer:      make(map[string]uint64),
 	}
 
-	m.microservice.StatisticsClients = append(
-		m.microservice.StatisticsClients,
-		statisticsClients,
-	)
+	clientID := len(m.microservice.StatisticsClients)
 
-	clientIndex := len(m.microservice.StatisticsClients) - 1
+	m.microservice.StatisticsClients[clientID] = statisticsClient
 
 	m.microservice.mu.Unlock()
 
-	go m.microservice.sendStatistics(clientIndex)
+	go m.microservice.sendStatistics(clientID)
 
 	<-statistics.Context().Done()
+
+	m.microservice.mu.Lock()
+	delete(m.microservice.StatisticsClients, clientID)
+	m.microservice.mu.Unlock()
 
 	return nil
 }
 
-func (m *MyMicroservice) sendStatistics(index int) {
+func (m *MyMicroservice) sendStatistics(clientID int) {
 	m.mu.Lock()
-	statistics := m.StatisticsClients[index].StatSubscribers
-	interval := m.StatisticsClients[index].IntervalSeconds
+
+	client, ok := m.StatisticsClients[clientID]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+
+	statistics := client.StatSubscribers
+	interval := client.IntervalSeconds
+
 	m.mu.Unlock()
 
 	ticker := time.NewTicker(time.Duration(interval) * time.Second)
@@ -57,18 +67,28 @@ func (m *MyMicroservice) sendStatistics(index int) {
 		case <-ticker.C:
 			m.mu.Lock()
 
+			client, ok := m.StatisticsClients[clientID]
+			if !ok {
+				m.mu.Unlock()
+				return
+			}
+
 			byMethod := make(map[string]uint64)
-			for method, count := range m.StatisticsClients[index].ByMethod {
+			for method, count := range client.ByMethod {
 				byMethod[method] = count
 			}
 
 			byConsumer := make(map[string]uint64)
-			for consumer, count := range m.StatisticsClients[index].ByConsumer {
+			for consumer, count := range client.ByConsumer {
 				byConsumer[consumer] = count
 			}
 
-			m.StatisticsClients[index].ByMethod = make(map[string]uint64)
-			m.StatisticsClients[index].ByConsumer = make(map[string]uint64)
+			m.StatisticsClients[clientID] = StatisticsClient{
+				StatSubscribers: client.StatSubscribers,
+				IntervalSeconds: client.IntervalSeconds,
+				ByMethod:        make(map[string]uint64),
+				ByConsumer:      make(map[string]uint64),
+			}
 
 			m.mu.Unlock()
 
